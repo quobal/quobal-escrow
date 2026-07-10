@@ -22,7 +22,7 @@ deal sizes $10–$500; hold duration days, not months.
 | Dependencies | OpenZeppelin `IERC20`/`SafeERC20` only; one external interface (EIP-3009 `receiveWithAuthorization` on USDC) |
 | Upgradability | None by design (v2 = new deployment) |
 | Oracles / cross-chain / governance | None |
-| Tests | `test/QuobalEscrow.t.sol` — 14 passing Foundry tests |
+| Tests | `test/QuobalEscrow.t.sol` — 18 passing Foundry tests (14 at baseline, +4 covering the remediations) |
 | Deploy script | `script/Deploy.s.sol` (Sepolia today; **production target: Polygon PoS** — native Circle USDC with EIP-3009 (payment-partner settlement network)) |
 | Audit baseline | initial commit of this repository (tag on request) |
 
@@ -83,7 +83,7 @@ plus a short written opinion on the key-management process.
 | Unrecoverable direct transfers (I) | `claimFees()` sweeps any balance above `totalHeld` (deal principal) to the treasury. |
 
 Gas-optimization suggestions were intentionally not adopted (sub-cent fees on
-Base; avoiding post-review churn outweighs the savings).
+Polygon; avoiding post-review churn outweighs the savings).
 
 ## Contact & materials
 
