@@ -23,7 +23,7 @@ deal sizes $10–$500; hold duration days, not months.
 | Upgradability | None by design (v2 = new deployment) |
 | Oracles / cross-chain / governance | None |
 | Tests | `test/QuobalEscrow.t.sol` — 14 passing Foundry tests |
-| Deploy script | `script/Deploy.s.sol` (Sepolia today; production = Ethereum mainnet or Base, TBD) |
+| Deploy script | `script/Deploy.s.sol` (Sepolia today; **production target: Base** — native Circle USDC with EIP-3009) |
 | Audit baseline | initial commit of this repository (tag on request) |
 
 Out of scope: the web platform (separately reviewed under our AML/KYC
