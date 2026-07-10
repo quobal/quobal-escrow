@@ -70,6 +70,21 @@ Deliverables requested: findings report (severity-classified, with fix
 review / retest round) suitable for sharing with a payment-services partner,
 plus a short written opinion on the key-management process.
 
+## Remediation of initial-review findings (2026-07)
+
+| Finding (severity) | Fix |
+|---|---|
+| Settlement depends on transfers to the immutable treasury (M) | Pull pattern: `release` pays only the creator; fees accrue in-contract and are swept by permissionless `claimFees()` to the immutable treasury. A frozen treasury can no longer block creator payouts. |
+| No on-chain maximum fee cap (L) | `MAX_FEE_BPS = 5_000` (50%) enforced in `deposit`. |
+| Single-step owner rotation (L) | Two-step transfer: `transferOwner` nominates, `acceptOwner` must be called from the nominee's key. |
+| dealId squatting (L) | Documented requirement (NatSpec + this file): dealIds are generated server-side with cryptographic randomness, never sequential. |
+| Role concentration (L) | Operational: production deploys with distinct owner (cold), arbiter (relayer hot), treasury keys — covered in the key-management process description. |
+| Unpinned compiler (I) | Pragma pinned to `0.8.28`. |
+| Unrecoverable direct transfers (I) | `claimFees()` sweeps any balance above `totalHeld` (deal principal) to the treasury. |
+
+Gas-optimization suggestions were intentionally not adopted (sub-cent fees on
+Base; avoiding post-review churn outweighs the savings).
+
 ## Contact & materials
 
 - This repository is the complete audit scope (source, tests, deploy script).

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity 0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {ERC20} from "openzeppelin-contracts/contracts/token/ERC20/ERC20.sol";
@@ -181,18 +181,52 @@ contract QuobalEscrowTest is Test {
 
     // ── release ─────────────────────────────────────────────────────────────
 
-    function test_release_paysCreatorAndTreasury() public {
+    function test_release_paysCreator_accruesFee() public {
         bytes32 dealId = keccak256("deal-7");
         doDeposit(dealId, AMOUNT, uint40(block.timestamp + 7 days));
 
         vm.prank(arbiter);
         escrow.release(dealId);
 
+        // Pull pattern: creator paid immediately, fee stays in the contract
+        // until claimFees() — treasury state can never block creator payouts.
         assertEq(usdc.balanceOf(creator), 35e6); // 70%
-        assertEq(usdc.balanceOf(treasury), 15e6); // 30%
-        assertEq(usdc.balanceOf(address(escrow)), 0);
+        assertEq(usdc.balanceOf(treasury), 0);
+        assertEq(usdc.balanceOf(address(escrow)), 15e6); // accrued fee
+        assertEq(escrow.totalHeld(), 0);
         (,,,,, QuobalEscrow.Status st) = escrow.deals(dealId);
         assertEq(uint8(st), uint8(QuobalEscrow.Status.Released));
+
+        escrow.claimFees();
+        assertEq(usdc.balanceOf(treasury), 15e6); // 30%
+        assertEq(usdc.balanceOf(address(escrow)), 0);
+    }
+
+    function test_claimFees_permissionless_and_sweepsStray() public {
+        bytes32 dealId = keccak256("deal-7b");
+        doDeposit(dealId, AMOUNT, uint40(block.timestamp + 7 days));
+        vm.prank(arbiter);
+        escrow.release(dealId); // 15e6 fee accrued
+
+        // A second deal still Held — its principal must never be sweepable.
+        bytes32 heldId = keccak256("deal-7c");
+        doDeposit(heldId, AMOUNT, uint40(block.timestamp + 7 days));
+
+        // Someone mistakenly transfers USDC straight to the contract.
+        usdc.mint(rando, 3e6);
+        vm.prank(rando);
+        usdc.transfer(address(escrow), 3e6);
+
+        vm.prank(rando); // anyone may trigger; destination is fixed
+        escrow.claimFees();
+
+        assertEq(usdc.balanceOf(treasury), 15e6 + 3e6); // fee + stray, NOT held principal
+        assertEq(usdc.balanceOf(address(escrow)), AMOUNT); // held deal untouched
+
+        // Held deal still fully refundable afterwards.
+        vm.prank(arbiter);
+        escrow.refund(heldId);
+        assertEq(usdc.balanceOf(address(escrow)), 0);
     }
 
     function test_release_onlyArbiter() public {
@@ -254,7 +288,7 @@ contract QuobalEscrowTest is Test {
         escrow.releaseAfterDeadline(dealId);
 
         assertEq(usdc.balanceOf(creator), 35e6);
-        assertEq(usdc.balanceOf(treasury), 15e6);
+        assertEq(usdc.balanceOf(address(escrow)), 15e6); // fee accrued, not yet claimed
     }
 
     // ── admin ───────────────────────────────────────────────────────────────
@@ -272,11 +306,66 @@ contract QuobalEscrowTest is Test {
         escrow.release(keccak256("nope"));
     }
 
+    function test_ownerTransfer_twoStep() public {
+        address newOwner = address(0x0117);
+
+        // Only the current owner can nominate.
+        vm.prank(rando);
+        vm.expectRevert(QuobalEscrow.NotOwner.selector);
+        escrow.transferOwner(newOwner);
+
+        escrow.transferOwner(newOwner); // this test contract is owner
+        assertEq(escrow.owner(), address(this)); // nothing changed yet
+        assertEq(escrow.pendingOwner(), newOwner);
+
+        // Only the nominee can accept — a typo'd nomination is inert.
+        vm.prank(rando);
+        vm.expectRevert(QuobalEscrow.NotOwner.selector);
+        escrow.acceptOwner();
+
+        vm.prank(newOwner);
+        escrow.acceptOwner();
+        assertEq(escrow.owner(), newOwner);
+        assertEq(escrow.pendingOwner(), address(0));
+
+        // Old owner has lost its powers.
+        vm.expectRevert(QuobalEscrow.NotOwner.selector);
+        escrow.setArbiter(rando);
+    }
+
+    function test_ownerTransfer_renominateOverridesTypo() public {
+        escrow.transferOwner(address(0xDEAD)); // "typo" — nobody holds this key
+        assertEq(escrow.owner(), address(this)); // still in control
+        address realOwner = address(0x0117);
+        escrow.transferOwner(realOwner); // simply nominate again
+        vm.prank(realOwner);
+        escrow.acceptOwner();
+        assertEq(escrow.owner(), realOwner);
+    }
+
+    function test_deposit_rejectsFeeAboveCap() public {
+        bytes32 dealId = keccak256("deal-cap");
+        uint40 deadline = uint40(block.timestamp + 7 days);
+        uint16 excessiveFee = escrow.MAX_FEE_BPS() + 1;
+        bytes32 nonce = boundNonce(dealId, creator, excessiveFee, deadline);
+        uint256 validBefore = block.timestamp + 900;
+        (uint8 v, bytes32 r, bytes32 s) = signReceive(buyerKey, buyer, AMOUNT, validBefore, nonce);
+        vm.expectRevert(QuobalEscrow.BadParams.selector);
+        escrow.deposit(dealId, creator, excessiveFee, deadline, buyer, AMOUNT, 0, validBefore, nonce, v, r, s);
+
+        // Exactly at the cap is accepted.
+        uint16 atCap = escrow.MAX_FEE_BPS();
+        bytes32 dealId2 = keccak256("deal-cap-ok");
+        bytes32 nonce2 = boundNonce(dealId2, creator, atCap, deadline);
+        (v, r, s) = signReceive(buyerKey, buyer, AMOUNT, validBefore, nonce2);
+        escrow.deposit(dealId2, creator, atCap, deadline, buyer, AMOUNT, 0, validBefore, nonce2, v, r, s);
+    }
+
     // ── fuzz ────────────────────────────────────────────────────────────────
 
     function testFuzz_feeMath_conserves(uint96 amount, uint16 feeBps) public {
         amount = uint96(bound(amount, 1, 1_000e6));
-        feeBps = uint16(bound(feeBps, 0, 10_000));
+        feeBps = uint16(bound(feeBps, 0, escrow.MAX_FEE_BPS()));
         usdc.mint(buyer, amount);
 
         bytes32 dealId = keccak256(abi.encode("fuzz", amount, feeBps));
@@ -290,8 +379,11 @@ contract QuobalEscrowTest is Test {
         uint256 treasuryBefore = usdc.balanceOf(treasury);
         vm.prank(arbiter);
         escrow.release(dealId);
+        escrow.claimFees();
 
         uint256 paidOut = (usdc.balanceOf(creator) - creatorBefore) + (usdc.balanceOf(treasury) - treasuryBefore);
         assertEq(paidOut, amount); // nothing minted, nothing stuck
+        assertEq(usdc.balanceOf(address(escrow)), 0);
+        assertEq(escrow.totalHeld(), 0);
     }
 }
